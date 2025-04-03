@@ -11,24 +11,27 @@ import cv2
 import uuid
 from shapely.geometry import LineString, Point
 
-class Line:
+class Rectangle:
     def __init__(self, start, end):
         self.start = start
         self.end = end
-        
-    def get_qline(self):
-        return QLine(self.start, self.end)
+    
+    def get_qrect(self):
+        """Возвращает QRect для отрисовки прямоугольника"""
+        return QRect(
+            min(self.start.x(), self.end.x()),
+            min(self.start.y(), self.end.y()),
+            abs(self.start.x() - self.end.x()),
+            abs(self.start.y() - self.end.y())
+        )
     
     def to_cv_coords(self, scale_factor):
         """Преобразует координаты в формат OpenCV с учетом масштаба"""
-        return (
-            (int(self.start.x() / scale_factor), int(self.start.y() / scale_factor)),
-            (int(self.end.x() / scale_factor), int(self.end.y() / scale_factor))
-        )
-    
-    def to_shapely_line(self):
-        """Преобразует линию в объект Shapely LineString для вычисления пересечений"""
-        return LineString([(self.start.x(), self.start.y()), (self.end.x(), self.end.y())])
+        x1 = min(self.start.x(), self.end.x()) / scale_factor
+        y1 = min(self.start.y(), self.end.y()) / scale_factor
+        x2 = max(self.start.x(), self.end.x()) / scale_factor
+        y2 = max(self.start.y(), self.end.y()) / scale_factor
+        return (int(x1), int(y1), int(x2), int(y2))
 
 class ImageCutterAppEnhanced(QMainWindow):
     def __init__(self):
@@ -39,7 +42,7 @@ class ImageCutterAppEnhanced(QMainWindow):
         self.image_path = None
         self.original_pixmap = None
         self.display_pixmap = None
-        self.lines = []
+        self.rectangles = []  # Список прямоугольников вместо линий
         self.drawing = False
         self.start_point = None
         self.current_point = None
@@ -82,9 +85,9 @@ class ImageCutterAppEnhanced(QMainWindow):
         self.btn_open.setMinimumWidth(150)
         button_layout.addWidget(self.btn_open)
         
-        # Кнопка для очистки линий
-        self.btn_clear = QPushButton("Очистить линии")
-        self.btn_clear.clicked.connect(self.clear_lines)
+        # Кнопка для очистки прямоугольников
+        self.btn_clear = QPushButton("Очистить выделения")
+        self.btn_clear.clicked.connect(self.clear_rectangles)
         self.btn_clear.setMinimumWidth(150)
         self.btn_clear.setEnabled(False)
         button_layout.addWidget(self.btn_clear)
@@ -150,8 +153,8 @@ class ImageCutterAppEnhanced(QMainWindow):
                 self.image_label.setPixmap(self.display_pixmap)
                 self.image_label.resize(self.display_pixmap.size())
                 
-                # Очищаем линии
-                self.lines = []
+                # Очищаем прямоугольники
+                self.rectangles = []
                 
                 # Устанавливаем размер виджета и обновляем интерфейс
                 self.btn_clear.setEnabled(True)
@@ -168,25 +171,26 @@ class ImageCutterAppEnhanced(QMainWindow):
             self.drawing = True
             self.start_point = event.pos()
             self.current_point = event.pos()
-            self.status_bar.showMessage(f"Начата линия в точке ({self.start_point.x()}, {self.start_point.y()})")
+            self.status_bar.showMessage(f"Начато выделение в точке ({self.start_point.x()}, {self.start_point.y()})")
     
     def mouse_move_event(self, event):
         if self.drawing:
             self.current_point = event.pos()
             self.image_label.update()
-            self.status_bar.showMessage(f"Рисование линии: ({self.start_point.x()}, {self.start_point.y()}) -> ({self.current_point.x()}, {self.current_point.y()})")
+            self.status_bar.showMessage(f"Рисование прямоугольника: ({self.start_point.x()}, {self.start_point.y()}) -> ({self.current_point.x()}, {self.current_point.y()})")
     
     def mouse_release_event(self, event):
         if self.drawing and event.button() == Qt.LeftButton:
             self.drawing = False
             end_point = event.pos()
             
-            # Добавляем линию только если расстояние между точками достаточно большое
+            # Добавляем прямоугольник только если его размер достаточно большой
             if (self.start_point - end_point).manhattanLength() > 10:
-                self.lines.append(Line(self.start_point, end_point))
-                self.status_bar.showMessage(f"Добавлена линия: ({self.start_point.x()}, {self.start_point.y()}) -> ({end_point.x()}, {end_point.y()}). Всего линий: {len(self.lines)}")
+                self.rectangles.append(Rectangle(self.start_point, end_point))
+                rect = Rectangle(self.start_point, end_point).get_qrect()
+                self.status_bar.showMessage(f"Добавлен прямоугольник: ({rect.x()}, {rect.y()}, {rect.width()}x{rect.height()}). Всего областей: {len(self.rectangles)}")
             else:
-                self.status_bar.showMessage("Линия слишком короткая и не была добавлена")
+                self.status_bar.showMessage("Прямоугольник слишком маленький и не был добавлен")
             
             self.image_label.update()
     
@@ -197,205 +201,40 @@ class ImageCutterAppEnhanced(QMainWindow):
             # Отрисовка изображения
             painter.drawPixmap(0, 0, self.display_pixmap)
             
-            # Настройка пера для линий
+            # Настройка пера для прямоугольников
             pen = QPen(Qt.red, 2, Qt.SolidLine)
             painter.setPen(pen)
+            painter.setBrush(QColor(255, 0, 0, 30))  # Полупрозрачная заливка
             
-            # Отрисовка существующих линий
-            for line in self.lines:
-                painter.drawLine(line.get_qline())
+            # Отрисовка существующих прямоугольников
+            for rect in self.rectangles:
+                painter.drawRect(rect.get_qrect())
             
-            # Отрисовка линии, которая сейчас рисуется
+            # Отрисовка прямоугольника, который сейчас рисуется
             if self.drawing:
-                painter.drawLine(self.start_point, self.current_point)
+                current_rect = QRect(
+                    min(self.start_point.x(), self.current_point.x()),
+                    min(self.start_point.y(), self.current_point.y()),
+                    abs(self.start_point.x() - self.current_point.x()),
+                    abs(self.start_point.y() - self.current_point.y())
+                )
+                painter.drawRect(current_rect)
             
             painter.end()
     
-    def clear_lines(self):
-        self.lines = []
+    def clear_rectangles(self):
+        """Очищает все прямоугольники"""
+        self.rectangles = []
         self.image_label.update()
-        self.status_bar.showMessage("Все линии очищены")
-    
-    def _find_line_intersection(self, line1, line2):
-        """Находит точку пересечения двух линий, если она существует"""
-        shapely_line1 = line1.to_shapely_line()
-        shapely_line2 = line2.to_shapely_line()
-        
-        if shapely_line1.intersects(shapely_line2):
-            intersection = shapely_line1.intersection(shapely_line2)
-            if isinstance(intersection, Point):
-                return (int(intersection.x), int(intersection.y))
-        
-        return None
-    
-    def _get_edge_intersection(self, line, width, height):
-        """Находит точки пересечения линии с краями изображения"""
-        # Преобразуем линию в параметрическое представление y = mx + b
-        start, end = line.start, line.end
-        dx = end.x() - start.x()
-        dy = end.y() - start.y()
-        
-        intersections = []
-        
-        # Если линия вертикальная
-        if abs(dx) < 1:
-            # Пересечения с верхней и нижней границами
-            intersections.append((start.x(), 0))
-            intersections.append((start.x(), height - 1))
-            return intersections
-        
-        # Если линия горизонтальная
-        if abs(dy) < 1:
-            # Пересечения с левой и правой границами
-            intersections.append((0, start.y()))
-            intersections.append((width - 1, start.y()))
-            return intersections
-        
-        # Для наклонных линий вычисляем параметры y = mx + b
-        m = dy / dx
-        b = start.y() - m * start.x()
-        
-        # Левая граница (x = 0)
-        left_y = b
-        if 0 <= left_y < height:
-            intersections.append((0, int(left_y)))
-        
-        # Правая граница (x = width-1)
-        right_y = m * (width-1) + b
-        if 0 <= right_y < height:
-            intersections.append((width-1, int(right_y)))
-        
-        # Верхняя граница (y = 0)
-        top_x = -b / m if m != 0 else 0
-        if 0 <= top_x < width:
-            intersections.append((int(top_x), 0))
-        
-        # Нижняя граница (y = height-1)
-        bottom_x = (height-1 - b) / m if m != 0 else 0
-        if 0 <= bottom_x < width:
-            intersections.append((int(bottom_x), height-1))
-        
-        return intersections
-    
-    def _extend_lines_to_edges_and_intersections(self, width, height):
-        """
-        Продлевает линии до пересечения с другими линиями или краями изображения
-        и возвращает список всех сегментов линий для рисования
-        """
-        if not self.lines:
-            return []
-        
-        # Создаем копию линий для работы
-        original_lines = self.lines.copy()
-        # Список сегментов линий для рисования
-        line_segments = []
-        
-        # Сначала находим все пересечения
-        intersections = []
-        for i, line1 in enumerate(original_lines):
-            # Добавляем начальную и конечную точки линии
-            intersections.append((line1.start.x(), line1.start.y()))
-            intersections.append((line1.end.x(), line1.end.y()))
-            
-            # Находим пересечения с другими линиями
-            for j, line2 in enumerate(original_lines):
-                if i != j:  # Не проверяем линию с самой собой
-                    intersection = self._find_line_intersection(line1, line2)
-                    if intersection:
-                        intersections.append(intersection)
-            
-            # Находим пересечения с краями изображения
-            edge_intersections = self._get_edge_intersection(line1, width, height)
-            intersections.extend(edge_intersections)
-        
-        # Удаляем дубликаты и сортируем точки
-        unique_intersections = list(set(intersections))
-        
-        # Проходим по каждой линии и создаем сегменты
-        for line in original_lines:
-            # Преобразуем линию в параметрическое представление
-            shapely_line = line.to_shapely_line()
-            
-            # Находим все точки, лежащие на линии
-            points_on_line = []
-            for point in unique_intersections:
-                shapely_point = Point(point)
-                if shapely_line.distance(shapely_point) < 1:  # Небольшой допуск для численной стабильности
-                    points_on_line.append(point)
-            
-            # Сортируем точки вдоль линии
-            if len(points_on_line) >= 2:
-                # Для сортировки используем расстояние от начальной точки
-                start_x, start_y = line.start.x(), line.start.y()
-                points_on_line.sort(key=lambda p: ((p[0] - start_x) ** 2 + (p[1] - start_y) ** 2) ** 0.5)
-                
-                # Создаем сегменты из отсортированных точек
-                for i in range(len(points_on_line) - 1):
-                    start_point = points_on_line[i]
-                    end_point = points_on_line[i + 1]
-                    # Добавляем сегмент только если точки разные
-                    if start_point != end_point:
-                        line_segments.append((start_point, end_point))
-        
-        return line_segments
-    
-    def _find_regions(self, image_size):
-        """Находит все замкнутые области, образованные линиями"""
-        if not self.lines:
-            return []
-        
-        width, height = image_size
-        
-        # Создаём пустое изображение для рисования линий
-        mask = np.ones((height, width), dtype=np.uint8) * 255
-        
-        # Получаем расширенные линии с учетом пересечений
-        extended_lines = self._extend_lines_to_edges_and_intersections(width, height)
-        
-        # Рисуем все сегменты линий на маске
-        for (start_x, start_y), (end_x, end_y) in extended_lines:
-            cv2.line(mask, (int(start_x), int(start_y)), (int(end_x), int(end_y)), 0, 1)
-        
-        # Для отладки: сохраняем маску, чтобы визуально проверить линии
-        # cv2.imwrite("debug_mask.png", mask)
-        
-        # Находим связные компоненты (области)
-        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=4)
-        
-        # Собираем информацию о регионах
-        regions = []
-        for i in range(1, num_labels):  # Пропускаем фон (метка 0)
-            x, y, w, h, area = stats[i]
-            
-            # Для проверки - если область слишком маленькая, пропускаем
-            if area < 100:  # Минимальная площадь области
-                continue
-            
-            # Создаем маску для этой области
-            region_mask = (labels == i).astype(np.uint8) * 255
-            
-            # Находим контур области
-            contours, _ = cv2.findContours(region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Берем самый большой контур
-                contour = max(contours, key=cv2.contourArea)
-                
-                # Получаем ограничивающий прямоугольник
-                x, y, w, h = cv2.boundingRect(contour)
-                
-                # Добавляем регион
-                regions.append((x, y, x + w, y + h, contour))
-        
-        return regions
+        self.status_bar.showMessage("Все выделения очищены")
     
     def cut_image(self):
         if not self.image_path:
             QMessageBox.warning(self, "Предупреждение", "Сначала загрузите изображение")
             return
         
-        if not self.lines:
-            QMessageBox.warning(self, "Предупреждение", "Нарисуйте линии разреза перед разрезкой")
+        if not self.rectangles:
+            QMessageBox.warning(self, "Предупреждение", "Выделите области перед разрезкой")
             return
         
         try:
@@ -408,19 +247,6 @@ class ImageCutterAppEnhanced(QMainWindow):
             if original_mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
             
-            # Конвертируем PIL.Image в формат numpy для OpenCV
-            img_np = np.array(pil_image)
-            
-            # Находим области на масштабированном изображении
-            preview_width = self.display_pixmap.width()
-            preview_height = self.display_pixmap.height()
-            regions = self._find_regions((preview_width, preview_height))
-            
-            if not regions:
-                QMessageBox.warning(self, "Предупреждение", "Не удалось обнаружить области для разрезки. Попробуйте добавить больше линий, чтобы сформировать замкнутые области.")
-                self.status_bar.showMessage("Области для разрезки не найдены")
-                return
-            
             # Получаем директорию и имя файла для сохранения результатов
             output_dir = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения результатов")
             if not output_dir:
@@ -431,12 +257,17 @@ class ImageCutterAppEnhanced(QMainWindow):
             
             # Масштабируем координаты областей обратно к оригинальному размеру
             orig_width, orig_height = self.original_size
+            preview_width = self.display_pixmap.width()
+            preview_height = self.display_pixmap.height()
             scale_x = orig_width / preview_width
             scale_y = orig_height / preview_height
             
             # Обрезаем и сохраняем каждую область
             saved_count = 0
-            for i, (x1, y1, x2, y2, contour) in enumerate(regions, 1):
+            for i, rect in enumerate(self.rectangles, 1):
+                # Получаем координаты прямоугольника и масштабируем их к оригинальному размеру
+                x1, y1, x2, y2 = rect.to_cv_coords(1.0)  # Получаем координаты без масштабирования
+                
                 # Масштабируем координаты к оригинальному размеру
                 orig_x1 = int(x1 * scale_x)
                 orig_y1 = int(y1 * scale_y)
@@ -468,13 +299,13 @@ class ImageCutterAppEnhanced(QMainWindow):
                 cropped.save(output_path, format="TIFF", compression="tiff_lzw")
                 saved_count += 1
                 
-                self.status_bar.showMessage(f"Сохранена область {i} из {len(regions)}: {output_filename}")
+                self.status_bar.showMessage(f"Сохранена область {i} из {len(self.rectangles)}: {output_filename}")
             
             if saved_count > 0:
                 QMessageBox.information(self, "Готово", f"Изображение успешно разрезано на {saved_count} частей и сохранено в:\n{output_dir}")
                 self.status_bar.showMessage(f"Готово: сохранено {saved_count} областей")
             else:
-                QMessageBox.warning(self, "Предупреждение", "Не удалось сохранить ни одной области. Проверьте линии разреза.")
+                QMessageBox.warning(self, "Предупреждение", "Не удалось сохранить ни одной области. Проверьте выделения.")
                 self.status_bar.showMessage("Не удалось сохранить ни одной области")
             
         except Exception as e:

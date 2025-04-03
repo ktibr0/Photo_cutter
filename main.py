@@ -4,17 +4,23 @@ import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QLabel, QPushButton, 
                             QVBoxLayout, QHBoxLayout, QWidget, QFileDialog, 
                             QMessageBox, QScrollArea)
-from PyQt5.QtGui import QPixmap, QPainter, QPen, QImage
+from PyQt5.QtGui import QPixmap, QPainter, QPen, QImage, QColor
 from PyQt5.QtCore import Qt, QPoint, QRect, QLine
 from PIL import Image
 
-class Line:
+class Rectangle:
     def __init__(self, start, end):
         self.start = start
         self.end = end
         
-    def get_qline(self):
-        return QLine(self.start, self.end)
+    def get_qrect(self):
+        """Возвращает QRect для отрисовки прямоугольника"""
+        return QRect(
+            min(self.start.x(), self.end.x()),
+            min(self.start.y(), self.end.y()),
+            abs(self.start.x() - self.end.x()),
+            abs(self.start.y() - self.end.y())
+        )
 
 class ImageCutterApp(QMainWindow):
     def __init__(self):
@@ -25,7 +31,7 @@ class ImageCutterApp(QMainWindow):
         self.image_path = None
         self.original_pixmap = None
         self.display_pixmap = None
-        self.lines = []
+        self.rectangles = []
         self.drawing = False
         self.start_point = None
         self.current_point = None
@@ -62,9 +68,9 @@ class ImageCutterApp(QMainWindow):
         self.btn_open.clicked.connect(self.open_image)
         button_layout.addWidget(self.btn_open)
         
-        # Кнопка для очистки линий
-        self.btn_clear = QPushButton("Очистить линии")
-        self.btn_clear.clicked.connect(self.clear_lines)
+        # Кнопка для очистки выделений
+        self.btn_clear = QPushButton("Очистить выделения")
+        self.btn_clear.clicked.connect(self.clear_rectangles)
         button_layout.addWidget(self.btn_clear)
         
         # Кнопка для разрезки изображения
@@ -116,8 +122,8 @@ class ImageCutterApp(QMainWindow):
                 self.image_label.setPixmap(self.display_pixmap)
                 self.image_label.resize(self.display_pixmap.size())
                 
-                # Очищаем линии
-                self.lines = []
+                # Очищаем выделения
+                self.rectangles = []
                 
                 # Устанавливаем размер виджета и обновляем интерфейс
                 self.btn_clear.setEnabled(True)
@@ -140,9 +146,9 @@ class ImageCutterApp(QMainWindow):
     def mouse_release_event(self, event):
         if self.drawing and event.button() == Qt.LeftButton:
             self.drawing = False
-            # Добавляем линию только если расстояние между точками достаточно большое
+            # Добавляем прямоугольник только если его размер достаточно большой
             if (self.start_point - event.pos()).manhattanLength() > 10:
-                self.lines.append(Line(self.start_point, event.pos()))
+                self.rectangles.append(Rectangle(self.start_point, event.pos()))
             self.image_label.update()
     
     def paint_event(self, event):
@@ -152,114 +158,35 @@ class ImageCutterApp(QMainWindow):
             # Отрисовка изображения
             painter.drawPixmap(0, 0, self.display_pixmap)
             
-            # Настройка пера для линий
+            # Настройка пера для прямоугольников
             pen = QPen(Qt.red, 2, Qt.SolidLine)
             painter.setPen(pen)
+            painter.setBrush(QColor(255, 0, 0, 30))  # Полупрозрачная заливка
             
-            # Отрисовка существующих линий
-            for line in self.lines:
-                painter.drawLine(line.get_qline())
+            # Отрисовка существующих прямоугольников
+            for rect in self.rectangles:
+                painter.drawRect(rect.get_qrect())
             
-            # Отрисовка линии, которая сейчас рисуется
+            # Отрисовка прямоугольника, который сейчас рисуется
             if self.drawing:
-                painter.drawLine(self.start_point, self.current_point)
+                current_rect = QRect(
+                    min(self.start_point.x(), self.current_point.x()),
+                    min(self.start_point.y(), self.current_point.y()),
+                    abs(self.start_point.x() - self.current_point.x()),
+                    abs(self.start_point.y() - self.current_point.y())
+                )
+                painter.drawRect(current_rect)
             
             painter.end()
     
-    def clear_lines(self):
-        self.lines = []
+    def clear_rectangles(self):
+        self.rectangles = []
         self.image_label.update()
     
-    def _find_regions(self):
-        """Находит все замкнутые области, образованные линиями"""
-        if not self.lines or not self.display_pixmap:
-            return []
-        
-        # Создаем маску того же размера, что и изображение
-        width = self.display_pixmap.width()
-        height = self.display_pixmap.height()
-        
-        # Рисуем все линии на временном изображении
-        temp_image = QImage(width, height, QImage.Format_ARGB32)
-        temp_image.fill(Qt.white)
-        
-        painter = QPainter(temp_image)
-        painter.setPen(QPen(Qt.black, 1, Qt.SolidLine))
-        
-        # Рисуем линии и продлеваем их до краев изображения
-        for line in self.lines:
-            # Рисуем оригинальную линию
-            painter.drawLine(line.get_qline())
-            
-            # Продлеваем линию до краев изображения
-            start, end = line.start, line.end
-            
-            # Вычисляем направление линии
-            dx = end.x() - start.x()
-            dy = end.y() - start.y()
-            
-            # Если линия вертикальная
-            if dx == 0:
-                painter.drawLine(start.x(), 0, start.x(), height)
-            # Если линия горизонтальная
-            elif dy == 0:
-                painter.drawLine(0, start.y(), width, start.y())
-            # Для наклонных линий
-            else:
-                # Вычисляем параметры прямой y = mx + b
-                m = dy / dx
-                b = start.y() - m * start.x()
-                
-                # Находим точки пересечения с границами изображения
-                # Левая граница (x = 0)
-                left_y = int(b)
-                if 0 <= left_y < height:
-                    left_point = QPoint(0, left_y)
-                else:
-                    left_point = None
-                
-                # Правая граница (x = width-1)
-                right_y = int(m * (width-1) + b)
-                if 0 <= right_y < height:
-                    right_point = QPoint(width-1, right_y)
-                else:
-                    right_point = None
-                
-                # Верхняя граница (y = 0)
-                top_x = int(-b / m) if m != 0 else 0
-                if 0 <= top_x < width:
-                    top_point = QPoint(top_x, 0)
-                else:
-                    top_point = None
-                
-                # Нижняя граница (y = height-1)
-                bottom_x = int((height-1 - b) / m) if m != 0 else 0
-                if 0 <= bottom_x < width:
-                    bottom_point = QPoint(bottom_x, height-1)
-                else:
-                    bottom_point = None
-                
-                # Рисуем продолженные линии
-                points = [p for p in [left_point, right_point, top_point, bottom_point] if p is not None]
-                if len(points) >= 2:
-                    painter.drawLine(points[0], points[1])
-        
-        painter.end()
-        
-        # Теперь у нас есть изображение с линиями, можно найти и заполнить области
-        # Этот код будет находить все области и возвращать их границы
-        
-        # Для простоты сейчас просто вернем все изображение как одну область
-        # В реальном приложении здесь должен быть более сложный алгоритм поиска областей
-        return [QRect(0, 0, width, height)]
-    
     def cut_image(self):
-        if not self.image_path or not self.lines:
-            QMessageBox.warning(self, "Предупреждение", "Загрузите изображение и нарисуйте линии разреза")
+        if not self.image_path or not self.rectangles:
+            QMessageBox.warning(self, "Предупреждение", "Загрузите изображение и выделите области для разрезки")
             return
-        
-        # Для простоты реализации, сейчас просто разрежем изображение по квадрантам
-        # В полной реализации здесь должен быть вызов функции _find_regions()
         
         try:
             # Открываем исходное изображение с полным качеством
@@ -273,16 +200,25 @@ class ImageCutterApp(QMainWindow):
             base_dir = os.path.dirname(self.image_path)
             base_name = os.path.splitext(os.path.basename(self.image_path))[0]
             
-            # Для демонстрации разобьем изображение на 4 части
-            # Это упрощенная версия, которая будет заменена на алгоритм поиска областей
-            regions = [
-                (0, 0, width // 2, height // 2),
-                (width // 2, 0, width, height // 2),
-                (0, height // 2, width // 2, height),
-                (width // 2, height // 2, width, height)
-            ]
+            # Получаем масштаб для преобразования координат
+            scale_x = width / self.display_pixmap.width()
+            scale_y = height / self.display_pixmap.height()
             
-            for i, (left, top, right, bottom) in enumerate(regions, 1):
+            # Обрезаем по каждому прямоугольнику
+            for i, rect in enumerate(self.rectangles, 1):
+                # Получаем координаты прямоугольника
+                qrect = rect.get_qrect()
+                left = int(qrect.x() * scale_x)
+                top = int(qrect.y() * scale_y)
+                right = int((qrect.x() + qrect.width()) * scale_x)
+                bottom = int((qrect.y() + qrect.height()) * scale_y)
+                
+                # Обеспечиваем, чтобы координаты были в пределах изображения
+                left = max(0, min(left, width - 1))
+                top = max(0, min(top, height - 1))
+                right = max(0, min(right, width))
+                bottom = max(0, min(bottom, height))
+                
                 # Обрезаем изображение
                 cropped = pil_image.crop((left, top, right, bottom))
                 
@@ -292,7 +228,7 @@ class ImageCutterApp(QMainWindow):
                 # Сохраняем с оригинальным качеством
                 cropped.save(output_path, format="TIFF", compression="tiff_lzw")
             
-            QMessageBox.information(self, "Готово", f"Изображение разрезано на 4 части и сохранено в:\n{base_dir}")
+            QMessageBox.information(self, "Готово", f"Изображение разрезано на {len(self.rectangles)} частей и сохранено в:\n{base_dir}")
             
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось разрезать изображение: {str(e)}")
